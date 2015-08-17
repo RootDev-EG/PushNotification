@@ -1,4 +1,4 @@
-# Telerik Push Notifications Plugin
+# RootDev Push Notifications Plugin
 
 ## Description
 
