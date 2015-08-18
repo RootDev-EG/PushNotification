@@ -9,354 +9,421 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.util.Log;
+
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GooglePlayServicesUtil;
 import com.google.android.gms.gcm.GoogleCloudMessaging;
+
 import org.apache.cordova.*;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class PushPlugin extends CordovaPlugin {
-	public static final String TAG = "PushPlugin";
+    public static final String TAG = "PushPlugin";
 
-	public static final String REGISTER = "register";
-	public static final String UNREGISTER = "unregister";
-	public static final String ARE_NOTIFICATIONS_ENABLED = "areNotificationsEnabled";
-	public static final String PROPERTY_REG_ID = "registration_id";
-	public static final String PROPERTY_APPVERSION = "app_version";
-	public static final String EXTRA_MESSAGE = "message";
-	public static final String EXIT = "exit";
-	private static final int PLAY_SERVICES_RESOLUTION_REQUEST = 9000;
+    public static final String REGISTER = "register";
+    public static final String UNREGISTER = "unregister";
+    public static final String ARE_NOTIFICATIONS_ENABLED = "areNotificationsEnabled";
+    public static final String INITIALIZE = "init";
+    public static final String PROPERTY_REG_ID = "registration_id";
+    public static final String PROPERTY_APPVERSION = "app_version";
+    public static final String PROPERTY_SAVED_MESSAGES = "saved_messages";
+    public static final String PROPERTY_SAVED_CONFIG = "saved_config";
+    public static final String EXTRA_MESSAGE = "message";
+    public static final String EXIT = "exit";
+    private static final int PLAY_SERVICES_RESOLUTION_REQUEST = 9000;
+    private static final String SHARED_PREFERENCES_NAME = "cordova_push_plugin";
 
-	private static CordovaWebView gWebView;
-	private static String gECB;
-	private static String gSenderID;
-	private static Bundle gCachedExtras = null;
-	private static boolean gForeground = false;
+    private static CordovaWebView gWebView;
+    private static String gECB;
+    private static String gSenderID;
+    private static Bundle gCachedExtras = null;
+    private static boolean gForeground = false;
 
-	/**
-	 * Gets the application context from cordova's main activity.
-	 *
-	 * @return the application context
-	 */
-	private Context getApplicationContext() {
-		return this.cordova.getActivity().getApplicationContext();
-	}
+    /**
+     * Gets the application context from cordova's main activity.
+     *
+     * @return the application context
+     */
+    private Context getApplicationContext() {
+        return this.cordova.getActivity().getApplicationContext();
+    }
 
-	private Activity getApplicationActivity() {
-		return this.cordova.getActivity();
-	}
+    private Activity getApplicationActivity() {
+        return this.cordova.getActivity();
+    }
 
-	GoogleCloudMessaging gcm;
-	String regid;
-	Context context;
+    GoogleCloudMessaging gcm;
+    String regid;
+    Context context;
 
-	@Override
-	public boolean execute(String action, JSONArray data, CallbackContext callbackContext) {
+    @Override
+    public boolean execute(String action, JSONArray data, CallbackContext callbackContext) {
+        boolean result;
 
-		boolean result;
+        Log.v(TAG, "execute: action=" + action);
 
-		Log.v(TAG, "execute: action=" + action);
+        if(INITIALIZE.equals(action)) {
+            try {
+                context = getApplicationContext();
+                saveConfiguration(context, data.getString(0));
+                result = true;
+            } catch (JSONException e) {
+                Log.e(TAG, "execute: Got JSON Exception " + e.getMessage());
+                result = false;
+                callbackContext.error(e.getMessage());
+            }
 
-		if (REGISTER.equals(action)) {
+            clearNotificationQueue(context);
+        } else if (REGISTER.equals(action)) {
 
-			Log.v(TAG, "execute: data=" + data.toString());
+            Log.v(TAG, "execute: data=" + data.toString());
 
-			try {
-				JSONObject jo = data.getJSONObject(0);
+            try {
+                context = getApplicationContext();
+                JSONObject jo = data.getJSONObject(0);
 
-				gWebView = this.webView;
-				Log.v(TAG, "execute: jo=" + jo.toString());
+                gWebView = this.webView;
+                Log.v(TAG, "execute: jo=" + jo.toString());
 
-				gECB = (String) jo.get("ecb");
-				gSenderID = (String) jo.get("senderID");
+                gECB = (String) jo.get("ecb");
+                gSenderID = (String) jo.get("senderID");
 
-				Log.v(TAG, "execute: ECB=" + gECB + " senderID=" + gSenderID);
+                Log.v(TAG, "execute: ECB=" + gECB + " senderID=" + gSenderID);
 
-				context = getApplicationContext();
 
-				regid = getRegistrationId(getApplicationContext());
+                regid = getRegistrationId(getApplicationContext());
 
-				if (regid.isEmpty()) {
-					new AsyncRegister().execute(callbackContext);
-				} else {
-					sendJavascript(new JSONObject().put("event", "registered").put("regid", regid));
-					callbackContext.success(regid);
-				}
-				result = true;
-			} catch (JSONException e) {
-				Log.e(TAG, "execute: Got JSON Exception " + e.getMessage());
-				result = false;
-				callbackContext.error(e.getMessage());
-			}
+                if (regid.isEmpty()) {
+                    new AsyncRegister().execute(callbackContext);
+                } else {
+                    sendJavascript(new JSONObject().put("event", "registered").put("regid", regid));
+                    callbackContext.success(regid);
+                }
+                result = true;
+            } catch (JSONException e) {
+                Log.e(TAG, "execute: Got JSON Exception " + e.getMessage());
+                result = false;
+                callbackContext.error(e.getMessage());
+            }
 
-			if (gCachedExtras != null) {
-				Log.v(TAG, "sending cached extras");
-				sendExtras(gCachedExtras);
-				gCachedExtras = null;
-			}
+            if (gCachedExtras != null) {
+                Log.v(TAG, "sending cached extras");
+                sendExtras(gCachedExtras);
+                gCachedExtras = null;
+            }
 
-		} else if (ARE_NOTIFICATIONS_ENABLED.equals(action)) {
+        } else if (ARE_NOTIFICATIONS_ENABLED.equals(action)) {
 
-			Log.v(TAG, "ARE_NOTIFICATIONS_ENABLED");
-			final boolean registered = !getRegistrationId(getApplicationContext()).isEmpty();
-			Log.d(TAG, "areNotificationsEnabled? " + registered);
-			callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, registered));
-			result = true;
+            Log.v(TAG, "ARE_NOTIFICATIONS_ENABLED");
+            final boolean registered = !getRegistrationId(getApplicationContext()).isEmpty();
+            Log.d(TAG, "areNotificationsEnabled? " + registered);
+            callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, registered));
+            result = true;
 
-		} else if (UNREGISTER.equals(action)) {
+        } else if (UNREGISTER.equals(action)) {
 
-			GoogleCloudMessaging gcm = GoogleCloudMessaging.getInstance(getApplicationContext());
-			try {
-				gcm.unregister();
-				removeRegistrationId(getApplicationContext());
-			} catch (IOException exception) {
-				Log.d(TAG, "IOException!");
-			}
+            GoogleCloudMessaging gcm = GoogleCloudMessaging.getInstance(getApplicationContext());
+            try {
+                gcm.unregister();
+                removeRegistrationId(getApplicationContext());
+            } catch (IOException exception) {
+                Log.d(TAG, "IOException!");
+            }
 
-			Log.v(TAG, "UNREGISTER");
-			result = true;
-			callbackContext.success();
-		} else {
-			result = false;
-			Log.e(TAG, "Invalid action : " + action);
-			callbackContext.error("Invalid action : " + action);
-		}
+            Log.v(TAG, "UNREGISTER");
+            result = true;
+            callbackContext.success();
+        } else {
+            result = false;
+            Log.e(TAG, "Invalid action : " + action);
+            callbackContext.error("Invalid action : " + action);
+        }
 
-		return result;
-	}
+        return result;
+    }
 
-	/**
-	 * Gets the current registration ID for application on GCM service.
-	 * <p/>
-	 * If result is empty, the app needs to register.
-	 *
-	 * @return registration ID, or empty string if there is no existing
-	 * registration ID.
-	 */
-	private String getRegistrationId(Context context) {
-		final SharedPreferences prefs = getGCMPreferences(context);
-		String registrationId = prefs.getString(PROPERTY_REG_ID, "");
-		if (registrationId.isEmpty()) {
-			Log.i(TAG, "Registration not found");
-			return "";
-		}
-		// Check if the app was updated; if so, it must clear the registration ID
-		// since the existing regID is not guaranteed to work with the new
-		// app version
-		String registeredVersion = prefs.getString(PROPERTY_APPVERSION, "");
-		String currentVersion = getVersion();
-		if (registeredVersion.equals(currentVersion)) {
-			Log.i(TAG, "Got registrationId from cache");
-			return registrationId;
-		}
-		return "";
-	}
+    /**
+     * Gets the current registration ID for application on GCM service.
+     * <p>
+     * If result is empty, the app needs to register.
+     *
+     * @return registration ID, or empty string if there is no existing
+     * registration ID.
+     */
+    private String getRegistrationId(Context context) {
+        final SharedPreferences prefs = getGCMPreferences(context);
+        String registrationId = prefs.getString(PROPERTY_REG_ID, "");
+        if (registrationId.isEmpty()) {
+            Log.i(TAG, "Registration not found");
+            return "";
+        }
+        // Check if the app was updated; if so, it must clear the registration ID
+        // since the existing regID is not guaranteed to work with the new
+        // app version
+        String registeredVersion = prefs.getString(PROPERTY_APPVERSION, "");
+        String currentVersion = getVersion();
+        if (registeredVersion.equals(currentVersion)) {
+            Log.i(TAG, "Got registrationId from cache");
+            return registrationId;
+        }
+        return "";
+    }
 
-	private class AsyncRegister extends AsyncTask<CallbackContext, Void, Void> {
-		@Override
-		protected Void doInBackground(CallbackContext... callbackContext) {
-			try {
-				if (gcm == null) {
-					gcm = GoogleCloudMessaging.getInstance(getApplicationContext());
-				}
-				regid = gcm.register(gSenderID);
-				Log.v(TAG, "Device registered, registration ID=" + regid);
-				storeRegistrationId(getApplicationContext(), regid);
-				sendJavascript(new JSONObject().put("event", "registered").put("regid", regid));
-				callbackContext[0].success(regid);
-			} catch (Exception ex) {
-				Log.d(TAG, "Got Exception on registerInBackground", ex);
-			}
-			return null;
-		}
-	}
+    private class AsyncRegister extends AsyncTask<CallbackContext, Void, Void> {
+        @Override
+        protected Void doInBackground(CallbackContext... callbackContext) {
+            try {
+                if (gcm == null) {
+                    gcm = GoogleCloudMessaging.getInstance(getApplicationContext());
+                }
+                regid = gcm.register(gSenderID);
+                Log.v(TAG, "Device registered, registration ID=" + regid);
+                storeRegistrationId(getApplicationContext(), regid);
+                sendJavascript(new JSONObject().put("event", "registered").put("regid", regid));
+                callbackContext[0].success(regid);
+            } catch (Exception ex) {
+                Log.d(TAG, "Got Exception on registerInBackground", ex);
+            }
+            return null;
+        }
+    }
 
-	/**
-	 * @return Application's {@code SharedPreferences}.
-	 */
-	private SharedPreferences getGCMPreferences(Context context) {
-		// This sample app persists the registration ID in shared preferences, but
-		// how you store the regID in your app is up to you.
-		Log.d(TAG, "Activity: " + getApplicationActivity().toString());
-		return context.getSharedPreferences(getApplicationActivity().toString(), Context.MODE_PRIVATE);
-	}
+    /**
+     * @return Application's {@code SharedPreferences}.
+     */
+    private static SharedPreferences getGCMPreferences(Context context) {
+        // This sample app persists the registration ID in shared preferences, but
+        // how you store the regID in your app is up to you.
+        return context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
+    }
 
-	/**
-	 * Stores the registration ID and app versionCode in the application's
-	 * {@code SharedPreferences}.
-	 *
-	 * @param context application's context.
-	 * @param regId   registration ID
-	 */
-	private void storeRegistrationId(Context context, String regId) {
-		final SharedPreferences prefs = getGCMPreferences(context);
-		String appVersion = getVersion();
-		Log.i(TAG, "Saving registrationId on version " + appVersion);
-		SharedPreferences.Editor editor = prefs.edit();
-		editor.putString(PROPERTY_REG_ID, regId);
-		editor.putString(PROPERTY_APPVERSION, appVersion);
-		editor.apply();
-	}
+    /**
+     * Stores the registration ID and app versionCode in the application's
+     * {@code SharedPreferences}.
+     *
+     * @param context application's context.
+     * @param regId   registration ID
+     */
+    private void storeRegistrationId(Context context, String regId) {
+        final SharedPreferences prefs = getGCMPreferences(context);
+        String appVersion = getVersion();
+        Log.i(TAG, "Saving registrationId on version " + appVersion);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(PROPERTY_REG_ID, regId);
+        editor.putString(PROPERTY_APPVERSION, appVersion);
+        editor.apply();
+    }
 
-	private void removeRegistrationId(Context context) {
-		final SharedPreferences prefs = getGCMPreferences(context);
-		Log.i(TAG, "Clearing registrationId");
-		SharedPreferences.Editor editor = prefs.edit();
-		editor.remove(PROPERTY_REG_ID);
-		editor.apply();
-	}
+    private void removeRegistrationId(Context context) {
+        final SharedPreferences prefs = getGCMPreferences(context);
+        Log.i(TAG, "Clearing registrationId");
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.remove(PROPERTY_REG_ID);
+        editor.apply();
+    }
 
-	/*
+    /*
    * Sends a json object to the client as parameter to a method which is defined in gECB.
    */
-	public static void sendJavascript(JSONObject _json) {
-		String _d = "javascript:" + gECB + "(" + _json.toString() + ")";
-		Log.v(TAG, "sendJavascript: " + _d);
+    public static void sendJavascript(JSONObject _json) {
+        String _d = "javascript:" + gECB + "(" + _json.toString() + ")";
+        Log.v(TAG, "sendJavascript: " + _d);
 
-		if (gECB != null && gWebView != null) {
-			gWebView.sendJavascript(_d);
-		}
-	}
+        if (gECB != null && gWebView != null) {
+            gWebView.sendJavascript(_d);
+        }
+    }
 
-	public String getVersion() {
-		try {
-			PackageManager packageManager = getApplicationActivity().getPackageManager();
-			return packageManager.getPackageInfo(getApplicationActivity().getPackageName(), 0).versionName;
-		} catch (NameNotFoundException exception) {
-			Log.d(TAG, "NameNotFoundException!");
-			return "";
-		}
-	}
+    public String getVersion() {
+        try {
+            PackageManager packageManager = getApplicationActivity().getPackageManager();
+            return packageManager.getPackageInfo(getApplicationActivity().getPackageName(), 0).versionName;
+        } catch (NameNotFoundException exception) {
+            Log.d(TAG, "NameNotFoundException!");
+            return "";
+        }
+    }
 
-	/*
+    /*
    * Sends the pushbundle extras to the client application.
    * If the client application isn't currently active, it is cached for later processing.
    */
-	public static void sendExtras(Bundle extras) {
-		if (extras != null) {
-			if (gECB != null && gWebView != null) {
-				sendJavascript(convertBundleToJson(extras));
-			} else {
-				Log.v(TAG, "sendExtras: caching extras to send at a later time.");
-				gCachedExtras = extras;
-			}
-		}
-	}
+    public static void sendExtras(Bundle extras) {
+        if (extras != null) {
+            if (gECB != null && gWebView != null) {
+                sendJavascript(convertBundleToJson(extras));
+            } else {
+                Log.v(TAG, "sendExtras: caching extras to send at a later time.");
+                gCachedExtras = extras;
+            }
+        }
+    }
 
-	@Override
-	public void initialize(CordovaInterface cordova, CordovaWebView webView) {
-		super.initialize(cordova, webView);
-		gForeground = true;
-		checkPlayServices();
-	}
+    @Override
+    public void initialize(CordovaInterface cordova, CordovaWebView webView) {
+        super.initialize(cordova, webView);
+        gForeground = true;
+        checkPlayServices();
+    }
 
-	@Override
-	public void onPause(boolean multitasking) {
-		super.onPause(multitasking);
-		gForeground = false;
-		final NotificationManager notificationManager = (NotificationManager) cordova.getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
+    @Override
+    public void onPause(boolean multitasking) {
+        super.onPause(multitasking);
+        gForeground = false;
+        final NotificationManager notificationManager = (NotificationManager) cordova.getActivity().getSystemService(Context.NOTIFICATION_SERVICE);
 //    notificationManager.cancelAll();
-	}
+    }
 
-	@Override
-	public void onResume(boolean multitasking) {
-		super.onResume(multitasking);
-		gForeground = true;
-		checkPlayServices();
-	}
+    @Override
+    public void onResume(boolean multitasking) {
+        super.onResume(multitasking);
+        gForeground = true;
+        checkPlayServices();
+    }
 
-	@Override
-	public void onDestroy() {
-		super.onDestroy();
-		gForeground = false;
-		gECB = null;
-		gWebView = null;
-	}
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        gForeground = false;
+        gECB = null;
+        gWebView = null;
+    }
 
-	private boolean checkPlayServices() {
-		int resultCode = GooglePlayServicesUtil.isGooglePlayServicesAvailable(getApplicationContext());
-		if (resultCode != ConnectionResult.SUCCESS) {
-			if (GooglePlayServicesUtil.isUserRecoverableError(resultCode)) {
-				GooglePlayServicesUtil.getErrorDialog(resultCode, this.cordova.getActivity(), PLAY_SERVICES_RESOLUTION_REQUEST).show();
-			} else {
-				Log.i(TAG, "This device does not support Play Services.");
-				// finish();
-			}
-			return false;
-		}
-		return true;
-	}
+    private boolean checkPlayServices() {
+        int resultCode = GooglePlayServicesUtil.isGooglePlayServicesAvailable(getApplicationContext());
+        if (resultCode != ConnectionResult.SUCCESS) {
+            if (GooglePlayServicesUtil.isUserRecoverableError(resultCode)) {
+                GooglePlayServicesUtil.getErrorDialog(resultCode, this.cordova.getActivity(), PLAY_SERVICES_RESOLUTION_REQUEST).show();
+            } else {
+                Log.i(TAG, "This device does not support Play Services.");
+                // finish();
+            }
+            return false;
+        }
+        return true;
+    }
 
-	/*
+    /*
    * serializes a bundle to JSON.
    */
-	private static JSONObject convertBundleToJson(Bundle extras) {
-		try {
-			JSONObject json;
-			json = new JSONObject().put("event", "message");
+    private static JSONObject convertBundleToJson(Bundle extras) {
+        try {
+            JSONObject json;
+            json = new JSONObject().put("event", "message");
 
-			JSONObject jsondata = new JSONObject();
-			for (String key : extras.keySet()) {
-				Object value = extras.get(key);
+            JSONObject jsondata = new JSONObject();
+            for (String key : extras.keySet()) {
+                Object value = extras.get(key);
 
-				// System data from Android
-				if (key.equals("from") || key.equals("collapse_key")) {
-					json.put(key, value);
-				} else if (key.equals("foreground")) {
-					json.put(key, extras.getBoolean("foreground"));
-				} else if (key.equals("coldstart")) {
-					json.put(key, extras.getBoolean("coldstart"));
-				} else {
-					// Maintain backwards compatibility
-					if (key.equals("message") || key.equals("msgcnt") || key.equals("soundname")) {
-						json.put(key, value);
-					}
+                // System data from Android
+                if (key.equals("from") || key.equals("collapse_key")) {
+                    json.put(key, value);
+                } else if (key.equals("foreground")) {
+                    json.put(key, extras.getBoolean("foreground"));
+                } else if (key.equals("coldstart")) {
+                    json.put(key, extras.getBoolean("coldstart"));
+                } else {
+                    // Maintain backwards compatibility
+                    if (key.equals("message") || key.equals("msgcnt") || key.equals("soundname")) {
+                        json.put(key, value);
+                    }
 
-					if (value instanceof String) {
-						// Try to figure out if the value is another JSON object
+                    if (value instanceof String) {
+                        // Try to figure out if the value is another JSON object
 
-						String strValue = (String) value;
-						if (strValue.startsWith("{")) {
-							try {
-								JSONObject json2 = new JSONObject(strValue);
-								jsondata.put(key, json2);
-							} catch (Exception e) {
-								jsondata.put(key, value);
-							}
-							// Try to figure out if the value is another JSON array
-						} else if (strValue.startsWith("[")) {
-							try {
-								JSONArray json2 = new JSONArray(strValue);
-								jsondata.put(key, json2);
-							} catch (Exception e) {
-								jsondata.put(key, value);
-							}
-						} else {
-							jsondata.put(key, value);
-						}
-					}
-				}
-			} // while
-			json.put("payload", jsondata);
+                        String strValue = (String) value;
+                        if (strValue.startsWith("{")) {
+                            try {
+                                JSONObject json2 = new JSONObject(strValue);
+                                jsondata.put(key, json2);
+                            } catch (Exception e) {
+                                jsondata.put(key, value);
+                            }
+                            // Try to figure out if the value is another JSON array
+                        } else if (strValue.startsWith("[")) {
+                            try {
+                                JSONArray json2 = new JSONArray(strValue);
+                                jsondata.put(key, json2);
+                            } catch (Exception e) {
+                                jsondata.put(key, value);
+                            }
+                        } else {
+                            jsondata.put(key, value);
+                        }
+                    }
+                }
+            } // while
+            json.put("payload", jsondata);
 
-			Log.v(TAG, "extrasToJSON: " + json.toString());
+            Log.v(TAG, "extrasToJSON: " + json.toString());
 
-			return json;
-		} catch (JSONException e) {
-			Log.e(TAG, "extrasToJSON: JSON exception");
-		}
-		return null;
-	}
+            return json;
+        } catch (JSONException e) {
+            Log.e(TAG, "extrasToJSON: JSON exception");
+        }
+        return null;
+    }
 
-	public static boolean isInForeground() {
-		return gForeground;
-	}
+    public static boolean isInForeground() {
+        return gForeground;
+    }
 
-	public static boolean isActive() {
-		return gWebView != null;
-	}
+    public static boolean isActive() {
+        return gWebView != null;
+    }
+
+    public static List<String> saveNotificationQueueEntry(Context context, String message) {
+        List<String> messagesList = new ArrayList<String>();
+        final SharedPreferences prefs = getGCMPreferences(context);
+        try {
+            JSONArray messages = new JSONArray(prefs.getString(PROPERTY_SAVED_MESSAGES, "[]"));
+            messages.put(message);
+            SharedPreferences.Editor editor = prefs.edit();
+            editor.putString(PROPERTY_SAVED_MESSAGES, messages.toString());
+            editor.commit();
+
+            for (int i = 0; i < messages.length(); i++) {
+                messagesList.add(messages.getString(i));
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "saved messages to string: JSON exception");
+        }
+
+        return messagesList;
+    }
+
+
+    public static void saveConfiguration(Context context, String config) {
+        final SharedPreferences prefs = getGCMPreferences(context);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(PROPERTY_SAVED_CONFIG, config);
+        editor.commit();
+    }
+
+    public static JSONObject getConfiguration(Context context) {
+        final SharedPreferences prefs = getGCMPreferences(context);
+        try {
+            return new JSONObject(prefs.getString(PROPERTY_SAVED_CONFIG, "{}"));
+        } catch (JSONException e) {
+            Log.e(TAG, "get payloads from preferences parsing error: ", e);
+            return null;
+        }
+    }
+
+    public static void clearNotificationQueue(Context context) {
+        final SharedPreferences prefs = getGCMPreferences(context);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.remove(PROPERTY_SAVED_MESSAGES);
+        editor.commit();
+
+        // Clear notification from status bar
+        final NotificationManager notificationManager = (NotificationManager) this.getSystemService(Context.NOTIFICATION_SERVICE);
+        notificationManager.cancelAll();
+    }
 }
