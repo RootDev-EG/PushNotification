@@ -423,7 +423,7 @@ public class PushPlugin extends CordovaPlugin {
         editor.commit();
 
         // Clear notification from status bar
-        final NotificationManager notificationManager = (NotificationManager) this.getSystemService(Context.NOTIFICATION_SERVICE);
+        final NotificationManager notificationManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         notificationManager.cancelAll();
     }
 }
