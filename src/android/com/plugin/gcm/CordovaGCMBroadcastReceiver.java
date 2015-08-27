@@ -5,8 +5,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.graphics.Color;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.support.v4.app.NotificationCompat;
@@ -19,6 +21,11 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.List;
 import java.util.Random;
 
@@ -28,6 +35,8 @@ import java.util.Random;
  */
 public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
     private static final String TAG = "GcmIntentService";
+
+    private static final String STORAGE_FOLDER = "/pushnotification";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -117,23 +126,13 @@ public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
                 .setAutoCancel(true);
 
 
-        if(!mergeWithConfiguration(context, mBuilder, extras)) {
+        if (!mergeWithConfiguration(context, mBuilder, extras)) {
             return;
         }
 
         String msgcnt = extras.getString("msgcnt");
         if (msgcnt != null) {
             mBuilder.setNumber(Integer.parseInt(msgcnt));
-        }
-
-        String soundName = extras.getString("sound");
-        if (soundName != null) {
-            Resources r = context.getResources();
-            int resourceId = r.getIdentifier(soundName, "raw", context.getPackageName());
-            Uri soundUri = Uri.parse("android.resource://" + context.getPackageName() + "/" + resourceId);
-            mBuilder.setSound(soundUri);
-            defaults &= ~Notification.DEFAULT_SOUND;
-            mBuilder.setDefaults(defaults);
         }
 
         final Notification notification = mBuilder.build();
@@ -146,7 +145,7 @@ public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
     }
 
     private boolean mergeWithConfiguration(Context context, NotificationCompat.Builder mBuilder, Bundle extras) {
-        String message = extras.getString("message"), color = extras.getString("color"), title = extras.getString("title");
+        String message = extras.getString("message"), color = extras.getString("color"), title = extras.getString("title"), sound = extras.getString("sound");
         JSONObject config = PushPlugin.getConfiguration(context);
         if (color == null) {
             try {
@@ -162,6 +161,20 @@ public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
             } catch (JSONException e) {
                 Log.d(TAG, "'title' is not provided in configuration!");
                 title = getAppName(context);
+            }
+        }
+
+        if (sound == null) {
+            try {
+                sound = config.getString("sound");
+                if (sound != null) {
+                    Uri soundUri = getUriFromAsset(context, sound);
+                    mBuilder.setSound(soundUri);
+                    mBuilder.setDefaults(~Notification.DEFAULT_SOUND);
+                }
+
+            } catch (JSONException e) {
+                Log.d(TAG, "'sound' is not provided in configuration!");
             }
         }
 
@@ -237,14 +250,14 @@ public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
             }
         }
 
-        if(message == null) {
+        if (message == null) {
             return false;
         } else {
             List<String> messages = PushPlugin.saveNotificationQueueEntry(context, message);
             int numberOfMsg = messages.size();
             int maxMsgNumber = 12;
 
-            if(numberOfMsg == 1) {
+            if (numberOfMsg == 1) {
                 mBuilder.setContentText(messages.get(0));
             } else {
                 message = "";
@@ -254,7 +267,7 @@ public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
                     else
                         message += messages.get(i);
 
-                    if(i != Math.max(numberOfMsg - maxMsgNumber, 0))
+                    if (i != Math.max(numberOfMsg - maxMsgNumber, 0))
                         message += "\n";
                 }
 
@@ -268,6 +281,69 @@ public class CordovaGCMBroadcastReceiver extends WakefulBroadcastReceiver {
                 .setTicker(title);
 
         return true;
+    }
+
+
+    /**
+     * URI for an asset.
+     *
+     * @param path
+     *      Asset path like file://...
+     *
+     * @return
+     *      URI pointing to the given path
+     */
+    private Uri getUriFromAsset(Context context, String path) {
+        File dir = context.getExternalCacheDir();
+
+        if (dir == null) {
+            Log.e(TAG, "Missing external cache dir");
+            return Uri.EMPTY;
+        }
+
+        String resPath  = path.replaceFirst("file:/", "www");
+        String fileName = resPath.substring(resPath.lastIndexOf('/') + 1);
+        String storage  = dir.toString() + STORAGE_FOLDER;
+        File file       = new File(storage, fileName);
+
+        //noinspection ResultOfMethodCallIgnored
+        new File(storage).mkdir();
+
+        try {
+            AssetManager assets = context.getAssets();
+            FileOutputStream outStream = new FileOutputStream(file);
+            InputStream inputStream = assets.open(resPath);
+
+            copyFile(inputStream, outStream);
+
+            outStream.flush();
+            outStream.close();
+
+            return Uri.fromFile(file);
+
+        } catch (Exception e) {
+            Log.e(TAG, "File not found: assets/" + resPath);
+            e.printStackTrace();
+        }
+
+        return Uri.EMPTY;
+    }
+
+    /**
+     * Copy content from input stream into output stream.
+     *
+     * @param in
+     *      The input stream
+     * @param out
+     *      The output stream
+     */
+    private void copyFile(InputStream in, OutputStream out) throws IOException {
+        byte[] buffer = new byte[1024];
+        int read;
+
+        while ((read = in.read(buffer)) != -1) {
+            out.write(buffer, 0, read);
+        }
     }
 
     private static String getAppName(Context context) {
